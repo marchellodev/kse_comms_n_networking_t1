@@ -1,15 +1,17 @@
 use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
+use std::sync::Arc;
 use std::{thread, time::Instant};
 
 const RNG_FROM: i32 = 1_000;
 const RNG_TO: i32 = 9_999;
-const MATRIX_SIZE: usize = 10000;
-const THREADS: usize = 0;
+const RNG_SEED: [u8; 32] = [1; 32];
+
+const MATRIX_SIZE: usize = 50_000;
+const THREADS: usize = 128;
 const PRINT_MATRICES: bool = false;
 
-// type Matrix = vec![vec![0; MATRIX_SIZE]; MATRIX_SIZE];
 type Matrix = Vec<Vec<i32>>;
 
 fn main() {
@@ -18,10 +20,11 @@ fn main() {
     println!("> program init");
 
     // let mut rng = rand::thread_rng();
-    let mut rng = SmallRng::from_entropy();
+    let mut rng = SmallRng::from_seed(RNG_SEED);
 
-    let a = generate_matrix(&mut rng);
-    let b = generate_matrix(&mut rng);
+    let a = Arc::new(generate_matrix(&mut rng));
+    let b = Arc::new(generate_matrix(&mut rng));
+
     if PRINT_MATRICES {
         print_matrix(&a);
         println!();
@@ -34,7 +37,7 @@ fn main() {
         (setup_elapsed.as_secs_f64() * 1000.0)
     );
 
-    let mut sum: Matrix = vec![vec![0; MATRIX_SIZE]; MATRIX_SIZE];
+    let mut sum: Vec<Vec<i32>> = vec![vec![0; MATRIX_SIZE]; MATRIX_SIZE];
 
     if THREADS == 0 {
         simple_sum(&a, &b, &mut sum);
@@ -42,18 +45,9 @@ fn main() {
         let mut handles = Vec::with_capacity(THREADS);
 
         for n in 0..THREADS {
-            let a_ref = a.clone();
-            let b_ref = b.clone();
-
-            let builder = thread::Builder::new()
-                .name("reductor".into())
-                .stack_size(32 * 1024 * 1024); // 32MB of stack space
-                                               // handles.push(thread::spawn(move || thread_sum(&a, &b, n)));
-            handles.push(
-                builder
-                    .spawn(move || thread_sum(&a_ref, &b_ref, n))
-                    .unwrap(),
-            );
+            let a_ref = Arc::clone(&a);
+            let b_ref = Arc::clone(&b);
+            handles.push(thread::spawn(move || thread_sum(&a_ref, &b_ref, n)));
         }
 
         // println!("Theads: {}", handles.len());
@@ -61,10 +55,9 @@ fn main() {
         let joined = handles.into_iter().map(|h| h.join().unwrap());
 
         for s in joined {
-            for i in 0..MATRIX_SIZE {
-                if s[i][0] != 0 {
-                    sum[i] = s[i].clone();
-                }
+            for (pos, e) in s.sum.iter().enumerate() {
+                let index = s.indices[pos];
+                sum[index] = e.clone();
             }
         }
     }
@@ -75,22 +68,32 @@ fn main() {
 
     let total_elapsed = now.elapsed();
     println!(
-        "> total finished in {:.4} ms",
+        "> task finished in {:.4} ms",
         ((total_elapsed - setup_elapsed).as_secs_f64() * 1000.0)
     );
 }
 
-fn thread_sum(a: &Matrix, b: &Matrix, thread_index: usize) -> Matrix {
-    let mut sum: Matrix = vec![vec![0; MATRIX_SIZE]; MATRIX_SIZE];
+struct ThreadSumResult {
+    sum: Vec<Vec<i32>>,
+    indices: Vec<usize>,
+}
+
+fn thread_sum(a: &Matrix, b: &Matrix, thread_index: usize) -> ThreadSumResult {
+    let mut sum: Vec<Vec<i32>> = Vec::new();
+    let mut indices: Vec<usize> = Vec::new();
+
     for x in (thread_index..MATRIX_SIZE).step_by(THREADS) {
         // println!("Thread {} processing {} column", thread_index, x);
 
+        let mut row: Vec<i32> = Vec::with_capacity(MATRIX_SIZE);
         for j in 0..MATRIX_SIZE {
-            sum[x][j] = a[x][j] + b[x][j];
+            row.push(a[x][j] + b[x][j]);
         }
-    }
 
-    return sum;
+        sum.push(row);
+        indices.push(x);
+    }
+    return ThreadSumResult { sum, indices };
 }
 
 fn simple_sum(a: &Matrix, b: &Matrix, sum: &mut Matrix) {
@@ -107,7 +110,6 @@ fn generate_matrix(rng: &mut SmallRng) -> Matrix {
     arr.iter_mut().for_each(|row| {
         row.iter_mut().for_each(|elem| {
             let num = rng.gen_range(RNG_FROM..RNG_TO);
-            // *elem = 10;
             *elem = num;
         })
     });
@@ -119,7 +121,7 @@ fn print_matrix(arr: &Matrix) {
     arr.iter().for_each(|row| {
         print!("[ ");
         row.iter().for_each(|elem| {
-            print!("{:5} ", elem); // adjust the width of the element to align the columns
+            print!("{:5} ", elem);
         });
         println!("]");
     });
