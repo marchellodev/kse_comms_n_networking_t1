@@ -1,29 +1,55 @@
 use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::{thread, time::Instant};
 
 const RNG_FROM: i32 = 1_000;
 const RNG_TO: i32 = 9_999;
 const RNG_SEED: [u8; 32] = [1; 32];
 
-const MATRIX_SIZE: usize = 50_000;
-const THREADS: usize = 128;
-const PRINT_MATRICES: bool = false;
+const THREADS: usize = 4;
+const PRINT_MATRICES: bool = true;
 
 type Matrix = Vec<Vec<i32>>;
 
 fn main() {
-    let now = Instant::now();
-
-    println!("> program init");
-
-    // let mut rng = rand::thread_rng();
     let mut rng = SmallRng::from_seed(RNG_SEED);
 
-    let a = Arc::new(generate_matrix(&mut rng));
-    let b = Arc::new(generate_matrix(&mut rng));
+    let a = generate_matrix(&mut rng, 4);
+    let b = generate_matrix(&mut rng, 4);
+
+    let result: Arc<Mutex<HashMap<usize, Matrix>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    calculate_detached(a, b, 1, Arc::clone(&result));
+
+    // sleep for 1 second to let detached thread finish
+    thread::sleep(std::time::Duration::from_secs(1));
+}
+
+fn calculate_detached(
+    a: Matrix,
+    b: Matrix,
+    id: usize,
+    result_map: Arc<Mutex<HashMap<usize, Matrix>>>,
+) {
+    thread::spawn(move || {
+        let result = calculate(a, b);
+        let mut result_map = result_map.lock().unwrap();
+        result_map.insert(id, result);
+        println!("detached calculate finished: {}", id);
+        print_matrix(&result_map[&id]);
+    });
+}
+
+fn calculate(a: Matrix, b: Matrix) -> Matrix {
+    let now = Instant::now();
+    println!("> program init");
+
+    let a = Arc::new(a);
+    let b = Arc::new(b);
 
     if PRINT_MATRICES {
         print_matrix(&a);
@@ -37,7 +63,8 @@ fn main() {
         (setup_elapsed.as_secs_f64() * 1000.0)
     );
 
-    let mut sum: Vec<Vec<i32>> = vec![vec![0; MATRIX_SIZE]; MATRIX_SIZE];
+    let size = a.len();
+    let mut sum: Vec<Vec<i32>> = vec![vec![0; size]; size];
 
     if THREADS == 0 {
         simple_sum(&a, &b, &mut sum);
@@ -71,6 +98,8 @@ fn main() {
         "> task finished in {:.4} ms",
         ((total_elapsed - setup_elapsed).as_secs_f64() * 1000.0)
     );
+
+    return sum;
 }
 
 struct ThreadSumResult {
@@ -82,11 +111,13 @@ fn thread_sum(a: &Matrix, b: &Matrix, thread_index: usize) -> ThreadSumResult {
     let mut sum: Vec<Vec<i32>> = Vec::new();
     let mut indices: Vec<usize> = Vec::new();
 
-    for x in (thread_index..MATRIX_SIZE).step_by(THREADS) {
+    let matrix_size = a.len();
+
+    for x in (thread_index..matrix_size).step_by(THREADS) {
         // println!("Thread {} processing {} column", thread_index, x);
 
-        let mut row: Vec<i32> = Vec::with_capacity(MATRIX_SIZE);
-        for j in 0..MATRIX_SIZE {
+        let mut row: Vec<i32> = Vec::with_capacity(matrix_size);
+        for j in 0..matrix_size {
             row.push(a[x][j] + b[x][j]);
         }
 
@@ -97,15 +128,16 @@ fn thread_sum(a: &Matrix, b: &Matrix, thread_index: usize) -> ThreadSumResult {
 }
 
 fn simple_sum(a: &Matrix, b: &Matrix, sum: &mut Matrix) {
-    for i in 0..MATRIX_SIZE {
-        for j in 0..MATRIX_SIZE {
+    let matrix_size = a.len();
+    for i in 0..matrix_size {
+        for j in 0..matrix_size {
             sum[i][j] = a[i][j] + b[i][j];
         }
     }
 }
 
-fn generate_matrix(rng: &mut SmallRng) -> Matrix {
-    let mut arr: Matrix = vec![vec![0; MATRIX_SIZE]; MATRIX_SIZE];
+fn generate_matrix(rng: &mut SmallRng, size: usize) -> Matrix {
+    let mut arr: Matrix = vec![vec![0; size]; size];
 
     arr.iter_mut().for_each(|row| {
         row.iter_mut().for_each(|elem| {
